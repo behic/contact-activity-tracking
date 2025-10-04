@@ -73,7 +73,7 @@ public without sharing class ContactActivityTrackerBatch implements Database.Bat
             String indicatorValue;
             if (latestActivityDateByContactId.containsKey(contactId)) {
                 Integer daysSince = today.daysBetween(latestActivityDateByContactId.get(contactId).date());
-                indicatorValue = classifyIndicatorByDaysSince(daysSince);
+                indicatorValue = classifyIndicatorByDaysSince(Math.abs(daysSince));
             } else {
                 indicatorValue = '-1';
             }
