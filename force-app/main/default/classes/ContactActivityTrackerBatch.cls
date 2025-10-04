@@ -3,6 +3,8 @@
  */
 
 public without sharing class ContactActivityTrackerBatch implements Database.Batchable<SObject>, Database.Stateful, Schedulable {
+    private final List<String> failedContactIds = new List<String>();
+
     public static String scheduleDaily(String jobName) {
         jobName = String.isBlank(jobName) ? 'ContactActivityTracker Daily Schedule' : jobName;
         String cronTime = '0 0 2 * * ?';
@@ -83,11 +85,76 @@ public without sharing class ContactActivityTrackerBatch implements Database.Bat
         }
 
         if (!contactsToUpdate.isEmpty()) {
-            update contactsToUpdate;
+            Database.SaveResult[] results = Database.update(contactsToUpdate, false);
+            for (Integer i = 0; i < results.size(); i++) {
+                if (!results[i].isSuccess()) {
+                    failedContactIds.add(contactsToUpdate[i].Id);
+                }
+            }
         }
     }
 
     public void finish(Database.BatchableContext batchableContext) {
+        sendContactEmail(failedContactIds);
+        sendChunkErrorEmail(batchableContext.getJobId());
+    }
+
+    @TestVisible
+    private static List<Messaging.SendEmailResult> sendContactEmail(List<String> failedIds) {
+        if (failedIds.isEmpty()) {
+            return null;
+        }
+
+        String body = String.format(
+            'The ContactActivityTrackerBatch job has completed, but some contacts failed to update.\n\n' +
+                'Total failed records: {0}\n\n' +
+                'List of failed Contact Ids:\n{1}',
+            new List<String>{ String.valueOf(failedIds.size()), String.join(failedIds, '\n') }
+        );
+
+        Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+        mail.setToAddresses(new List<String>{ 'admin@yourcompany.com' });
+        mail.setSubject('ContactActivityTrackerBatch Failure Report');
+        mail.setPlainTextBody(body);
+
+        return Messaging.sendEmail(new List<Messaging.SingleEmailMessage>{ mail });
+    }
+
+    @TestVisible
+    private static List<Messaging.SendEmailResult> sendChunkErrorEmail(Id jobId) {
+        if (jobId == null) {
+            return null;
+        }
+
+        AsyncApexJob job = [
+            SELECT Id, Status, NumberOfErrors, JobItemsProcessed, TotalJobItems
+            FROM AsyncApexJob
+            WHERE Id = :jobId
+            LIMIT 1
+        ];
+
+        if (job.NumberOfErrors == 0) {
+            return null;
+        }
+
+        String body = String.format(
+            'The ContactActivityTrackerBatch job has completed with chunk-level errors.\n\n' +
+            'Job Id: {0}\nStatus: {1}\nProcessed: {2}/{3}\nTotal chunk errors: {4}\n',
+            new List<String>{
+                String.valueOf(job.Id),
+                String.valueOf(job.Status),
+                String.valueOf(job.JobItemsProcessed),
+                String.valueOf(job.TotalJobItems),
+                String.valueOf(job.NumberOfErrors)
+            }
+        );
+
+        Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+        mail.setToAddresses(new List<String>{ 'admin@yourcompany.com' });
+        mail.setSubject('ContactActivityTrackerBatch – Chunk Errors');
+        mail.setPlainTextBody(body);
+
+        return Messaging.sendEmail(new List<Messaging.SingleEmailMessage>{ mail });
     }
 
     private static void upsertLatest(
